@@ -3,36 +3,63 @@ import sys
 import httplib
 import socket
 import time
+import thread
+
 if sys.platform == 'symbian_s60':
     import appuifw
     from graphics import Image
     
-HOST = "192.168.1.99"
+HOST = "192.168.10.99"
 PORT = 8080
+# timeout to disconnect
+INACTIVITY_TIMEOUT = 10
 
 class BoxeeRemote(object):
     
     _command_url = '/xbmcCmds/xbmcHttp?command='
 
     def __init__(self, host, port):
-        self.connection = httplib.HTTPConnection(host, port)
+        self._host = host
+        self._port = port
+        self.connection = None
         self.connected  = False
+        self.disconnect_timeout = time.time()
+        # self.disconnect_thread = thread.start_new_thread(self._looping_thread, tuple())
         self.webServerStatus()
         print 'connected'
     
+    def _looping_thread(self):
+        import time
+        while 1:
+            time.sleep(5)
+            timeout = time.time() - self.disconnect_timeout > INACTIVITY_TIMEOUT
+            if self.connection and timeout:
+                self.connection.close()
+                appuifw.query(u"CONNECTION CLOSED!!","query")
+                self.connection = None
+    
+    def _get_sure_you_connect(self):
+        if self.connection:
+            self.disconnect_timeout = time.time()
+        else:
+            # in case there is no connection i have to create a new one
+            self.connection = httplib.HTTPConnection(self._host, self._port)
+    
     def webServerStatus(self):
-        self.fireCommand('getcurrentplaylist()')
+        self.fireCommand('GetVolume')
     
     def fireAction(self, action_code):
+        self._get_sure_you_connect()
         return self.fireCommand("Action(%d)" % action_code)
     
     def fireCommand(self, command):
+        self._get_sure_you_connect()
         try:
             self.connection.request("GET", self._command_url + command )
             response = self.connection.getresponse()
             self.connected = True
-            if response.status!=200:
-                raise Exception("invalid action id %d : reponse %s" % (command, response.code))
+            if response.status != 200:
+                raise Exception("invalid action id %s : reponse %s" % (command, response.msg))
             return response.read()
         except Exception, e:
             print e
@@ -71,7 +98,12 @@ class BoxeeRemote(object):
     def isKeybordActive(self):
         response = self.fireCommand('getKeyboardText')
         return 'active="1"' in response
-
+    
+    def close(self):
+        if self.connection:
+            self.connection.close()
+            self.connection = None
+        
 
 class SymbianKeyboard(object):
     
@@ -106,7 +138,7 @@ class BoxeeApplication(object):
         self.appuifw = appuifw
         self.app = appuifw.app
         self.app.title = u"Boxee Remote"
-        self.app.screen = 'large'
+        # self.app.screen = 'large'
         self.body = appuifw.Canvas(event_callback=self.keyboard.handle_event, 
                                    redraw_callback=None)
         self.app.body = self.body
@@ -179,6 +211,9 @@ class BoxeeApplication(object):
         pass
     
     def quit(self):
+        if self.remote:
+            self.remote.close()
+            
         self.running = False
     
     def loop(self):
@@ -215,9 +250,12 @@ class BoxeeApplication(object):
                 print "connection closed"
             
             e32.ao_yield()
+        
         if not start_time + 2000 < time.time():
             if appuifw.query(u"Do you want to reset the preferences?","query") == True:
                 self.clear_preferences()
+        
+        self.quit()
         
 if __name__ == '__main__':
     
@@ -227,3 +265,6 @@ if __name__ == '__main__':
     else:
         remote = BoxeeRemote(HOST, PORT)
         remote.webServerStatus()
+        time.sleep(10)
+        remote.webServerStatus()
+        
